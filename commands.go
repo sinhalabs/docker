@@ -638,7 +638,7 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 		}
 	}
 
-	if len(strings.SplitN(name, "/", 2)) == 1 {
+	if *registry == "" && len(strings.SplitN(name, "/", 2)) == 1 {
 		return fmt.Errorf("Impossible to push a \"root\" repository. Please rename your repository in <user>/<repo> (ex: %s/%s)", out.Username, name)
 	}
 

@@ -327,18 +327,29 @@ func (srv *Server) pullImage(out io.Writer, imgId, registry string, token []stri
 	return nil
 }
 
-func (srv *Server) pullRepository(out io.Writer, remote, askedTag string) error {
+func (srv *Server) pullRepository(out io.Writer, remote, askedTag, registryEp string) error {
 	out = utils.NewWriteFlusher(out)
 	fmt.Fprintf(out, "Pulling repository %s from %s\r\n", remote, auth.IndexServerAddress())
-	repoData, err := srv.registry.GetRepositoryData(remote)
-	if err != nil {
-		return err
-	}
 
-	utils.Debugf("Updating checksums")
-	// Reload the json file to make sure not to overwrite faster sums
-	if err := srv.runtime.graph.UpdateChecksums(repoData.ImgList); err != nil {
-		return err
+	var repoData *registry.RepositoryData
+	var err error
+	if registryEp == "" {
+		repoData, err = srv.registry.GetRepositoryData(remote)
+		if err != nil {
+			return err
+		}
+
+		utils.Debugf("Updating checksums")
+		// Reload the json file to make sure not to overwrite faster sums
+		if err := srv.runtime.graph.UpdateChecksums(repoData.ImgList); err != nil {
+			return err
+		}
+	} else {
+		repoData = &registry.RepositoryData{
+			Tokens: []string{},
+			ImgList: make(map[string]*registry.ImgData),
+			Endpoints: []string{registryEp},
+		}
 	}
 
 	utils.Debugf("Retrieving the tag list")
@@ -346,8 +357,19 @@ func (srv *Server) pullRepository(out io.Writer, remote, askedTag string) error 
 	if err != nil {
 		return err
 	}
+
+	if registryEp != "" {
+		for tag, id := range tagsList {
+			repoData.ImgList[id] = &registry.ImgData{
+				Id: id,
+				Tag: tag,
+				Checksum: "",
+			}
+		}
+	}
+
 	utils.Debugf("Registering tags")
-	// If not specific tag have been asked, take all
+	// If no tag has been specified, pull them all
 	if askedTag == "" {
 		for tag, id := range tagsList {
 			repoData.ImgList[id].Tag = tag
@@ -396,18 +418,14 @@ func (srv *Server) pullRepository(out io.Writer, remote, askedTag string) error 
 }
 
 func (srv *Server) ImagePull(name, tag, registry string, out io.Writer) error {
-	if registry != "" {
+	err := srv.pullRepository(out, name, tag, registry)
+	if err != nil && registry != "" {
 		if err := srv.pullImage(out, name, registry, nil); err != nil {
 			return err
 		}
 		return nil
 	}
-
-	if err := srv.pullRepository(out, name, tag); err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 // Retrieve the checksum of an image
@@ -476,7 +494,7 @@ func (srv *Server) getImageList(localRepo map[string]string) ([]*registry.ImgDat
 	return imgList, nil
 }
 
-func (srv *Server) pushRepository(out io.Writer, name string, localRepo map[string]string) error {
+func (srv *Server) pushRepository(out io.Writer, name, registryEp string, localRepo map[string]string) error {
 	out = utils.NewWriteFlusher(out)
 	fmt.Fprintf(out, "Processing checksums\n")
 	imgList, err := srv.getImageList(localRepo)
@@ -484,10 +502,29 @@ func (srv *Server) pushRepository(out io.Writer, name string, localRepo map[stri
 		return err
 	}
 	fmt.Fprintf(out, "Sending image list\n")
-
-	repoData, err := srv.registry.PushImageJsonIndex(name, imgList, false)
-	if err != nil {
-		return err
+	var repoData *registry.RepositoryData
+	if registryEp == "" {
+		repoData, err = srv.registry.PushImageJsonIndex(name, imgList, false)
+		if err != nil {
+			return err
+		}
+	} else {
+		repoData = &registry.RepositoryData{
+			ImgList: make(map[string]*registry.ImgData),
+			Tokens: []string{},
+			Endpoints: []string{registryEp},
+		}
+		tagsList, err := srv.registry.GetRemoteTags(repoData.Endpoints, name, repoData.Tokens)
+		if err != nil {
+			return err
+		}
+		for tag, id := range tagsList {
+			repoData.ImgList[id] = &registry.ImgData{
+				Id: id,
+				Tag: tag,
+				Checksum: "",
+			}
+		}
 	}
 
 	// FIXME: Send only needed images
@@ -496,6 +533,9 @@ func (srv *Server) pushRepository(out io.Writer, name string, localRepo map[stri
 		// For each image within the repo, push them
 		for _, elem := range imgList {
 			if _, exists := repoData.ImgList[elem.Id]; exists {
+				fmt.Fprintf(out, "Image %s already on registry, skipping\n", name)
+				continue
+			} else if registryEp != "" && srv.registry.LookupRemoteImage(elem.Id, registryEp, repoData.Tokens) {
 				fmt.Fprintf(out, "Image %s already on registry, skipping\n", name)
 				continue
 			}
@@ -509,10 +549,12 @@ func (srv *Server) pushRepository(out io.Writer, name string, localRepo map[stri
 			}
 		}
 	}
-
-	if _, err := srv.registry.PushImageJsonIndex(name, imgList, true); err != nil {
-		return err
+	if registryEp == "" {
+		if _, err := srv.registry.PushImageJsonIndex(name, imgList, true); err != nil {
+			return err
+		}
 	}
+
 	return nil
 }
 
@@ -583,7 +625,7 @@ func (srv *Server) ImagePush(name, registry string, out io.Writer) error {
 		fmt.Fprintf(out, "The push refers to a repository [%s] (len: %d)\n", name, len(srv.runtime.repositories.Repositories[name]))
 		// If it fails, try to get the repository
 		if localRepo, exists := srv.runtime.repositories.Repositories[name]; exists {
-			if err := srv.pushRepository(out, name, localRepo); err != nil {
+			if err := srv.pushRepository(out, name, registry, localRepo); err != nil {
 				return err
 			}
 			return nil

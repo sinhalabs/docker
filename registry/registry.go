@@ -2,6 +2,7 @@ package registry
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,9 +152,12 @@ func (r *Registry) GetRemoteTags(registries []string, repository string, token [
 		}
 		req.Header.Set("Authorization", "Token "+strings.Join(token, ", "))
 		res, err := r.client.Do(req)
-		defer res.Body.Close()
-		utils.Debugf("Got status code %d from %s", res.StatusCode, endpoint)
+		if res != nil {
+			defer res.Body.Close()
+			utils.Debugf("Got status code %d from %s", res.StatusCode, endpoint)
+		}
 		if err != nil || (res.StatusCode != 200 && res.StatusCode != 404) {
+			utils.Debugf("%v", err)
 			continue
 		} else if res.StatusCode == 404 {
 			return nil, fmt.Errorf("Repository not found")
@@ -460,10 +464,12 @@ type Registry struct {
 func NewRegistry(root string) *Registry {
 	// If the auth file does not exist, keep going
 	authConfig, _ := auth.LoadConfig(root)
-
+ 	tr := &http.Transport{
+        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+    }
 	r := &Registry{
 		authConfig: authConfig,
-		client:     &http.Client{},
+		client:     &http.Client{Transport: tr},
 	}
 	r.client.Jar = cookiejar.NewCookieJar()
 	return r

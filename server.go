@@ -515,14 +515,15 @@ func (srv *Server) pushRepository(out io.Writer, name, registryEp string, localR
 			Endpoints: []string{registryEp},
 		}
 		tagsList, err := srv.registry.GetRemoteTags(repoData.Endpoints, name, repoData.Tokens)
-		if err != nil {
+		if err != nil && err.Error() != "Repository not found" {
 			return err
-		}
-		for tag, id := range tagsList {
-			repoData.ImgList[id] = &registry.ImgData{
-				Id: id,
-				Tag: tag,
-				Checksum: "",
+		} else if err == nil {
+			for tag, id := range tagsList {
+				repoData.ImgList[id] = &registry.ImgData{
+					Id: id,
+					Tag: tag,
+					Checksum: "",
+				}
 			}
 		}
 	}

@@ -2,7 +2,6 @@ package registry
 
 import (
 	"bytes"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -464,12 +463,9 @@ type Registry struct {
 func NewRegistry(root string) *Registry {
 	// If the auth file does not exist, keep going
 	authConfig, _ := auth.LoadConfig(root)
- 	tr := &http.Transport{
-        TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-    }
 	r := &Registry{
 		authConfig: authConfig,
-		client:     &http.Client{Transport: tr},
+		client:     &http.Client{},
 	}
 	r.client.Jar = cookiejar.NewCookieJar()
 	return r

@@ -4,8 +4,8 @@
 
 .. _python_web_app:
 
-Building a python web app
-=========================
+Python Web App
+==============
 
 .. include:: example_header.inc
 
@@ -70,7 +70,8 @@ lookup the public-facing port which is NAT-ed store the private port used by the
 
 .. code-block:: bash
 
-    curl http://`hostname`:$WEB_PORT
+    # install curl if necessary, then ...
+    curl http://127.0.0.1:$WEB_PORT
       Hello world!
 
 access the web app using curl. If everything worked as planned you should see the line "Hello world!" inside of your console.

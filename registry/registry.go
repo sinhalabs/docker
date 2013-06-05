@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-var ErrAlreadyExists error = errors.New("Image already exists")
+var ErrAlreadyExists = errors.New("Image already exists")
 
 func doWithCookies(c *http.Client, req *http.Request) (*http.Response, error) {
 	for _, cookie := range c.Jar.Cookies(req.URL) {
@@ -63,7 +63,11 @@ func (r *Registry) LookupRemoteImage(imgId, registry string, token []string) boo
 		return false
 	}
 	res, err := rt.RoundTrip(req)
-	return err == nil && res.StatusCode == 200
+	if err != nil {
+		return false
+	}
+	res.Body.Close()
+	return res.StatusCode == 200
 }
 
 func (r *Registry) getImagesInRepository(repository string, authConfig *auth.AuthConfig) ([]map[string]string, error) {
@@ -102,8 +106,8 @@ func (r *Registry) getImagesInRepository(repository string, authConfig *auth.Aut
 
 // Retrieve an image from the Registry.
 // Returns the Image object as well as the layer as an Archive (io.Reader)
-func (r *Registry) GetRemoteImageJson(imgId, registry string, token []string) ([]byte, error) {
-	// Get the Json
+func (r *Registry) GetRemoteImageJSON(imgId, registry string, token []string) ([]byte, error) {
+	// Get the JSON
 	req, err := http.NewRequest("GET", registry+"/images/"+imgId+"/json", nil)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to download json: %s", err)
@@ -163,12 +167,11 @@ func (r *Registry) GetRemoteTags(registries []string, repository string, token [
 		}
 
 		result := make(map[string]string)
-
-		rawJson, err := ioutil.ReadAll(res.Body)
+		rawJSON, err := ioutil.ReadAll(res.Body)
 		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(rawJson, &result); err != nil {
+		if err := json.Unmarshal(rawJSON, &result); err != nil {
 			return nil, err
 		}
 		return result, nil
@@ -214,19 +217,19 @@ func (r *Registry) GetRepositoryData(remote string) (*RepositoryData, error) {
 		return nil, fmt.Errorf("Index response didn't contain any endpoints")
 	}
 
-	checksumsJson, err := ioutil.ReadAll(res.Body)
+	checksumsJSON, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
 	remoteChecksums := []*ImgData{}
-	if err := json.Unmarshal(checksumsJson, &remoteChecksums); err != nil {
+	if err := json.Unmarshal(checksumsJSON, &remoteChecksums); err != nil {
 		return nil, err
 	}
 
 	// Forge a better object from the retrieved data
 	imgsData := make(map[string]*ImgData)
 	for _, elem := range remoteChecksums {
-		imgsData[elem.Id] = elem
+		imgsData[elem.ID] = elem
 	}
 
 	return &RepositoryData{
@@ -237,10 +240,10 @@ func (r *Registry) GetRepositoryData(remote string) (*RepositoryData, error) {
 }
 
 // Push a local image to the registry
-func (r *Registry) PushImageJsonRegistry(imgData *ImgData, jsonRaw []byte, registry string, token []string) error {
+func (r *Registry) PushImageJSONRegistry(imgData *ImgData, jsonRaw []byte, registry string, token []string) error {
 	registry = "https://" + registry + "/v1"
 	// FIXME: try json with UTF8
-	req, err := http.NewRequest("PUT", registry+"/images/"+imgData.Id+"/json", strings.NewReader(string(jsonRaw)))
+	req, err := http.NewRequest("PUT", registry+"/images/"+imgData.ID+"/json", strings.NewReader(string(jsonRaw)))
 	if err != nil {
 		return err
 	}
@@ -248,7 +251,7 @@ func (r *Registry) PushImageJsonRegistry(imgData *ImgData, jsonRaw []byte, regis
 	req.Header.Set("Authorization", "Token "+strings.Join(token, ","))
 	req.Header.Set("X-Docker-Checksum", imgData.Checksum)
 
-	utils.Debugf("Setting checksum for %s: %s", imgData.Id, imgData.Checksum)
+	utils.Debugf("Setting checksum for %s: %s", imgData.ID, imgData.Checksum)
 	res, err := doWithCookies(r.client, req)
 	if err != nil {
 		return fmt.Errorf("Failed to upload metadata: %s", err)
@@ -323,8 +326,8 @@ func (r *Registry) PushRegistryTag(remote, revision, tag, registry string, token
 	return nil
 }
 
-func (r *Registry) PushImageJsonIndex(remote string, imgList []*ImgData, validate bool) (*RepositoryData, error) {
-	imgListJson, err := json.Marshal(imgList)
+func (r *Registry) PushImageJSONIndex(remote string, imgList []*ImgData, validate bool) (*RepositoryData, error) {
+	imgListJSON, err := json.Marshal(imgList)
 	if err != nil {
 		return nil, err
 	}
@@ -332,12 +335,15 @@ func (r *Registry) PushImageJsonIndex(remote string, imgList []*ImgData, validat
 	if validate {
 		suffix = "images"
 	}
-	req, err := http.NewRequest("PUT", auth.IndexServerAddress()+"/repositories/"+remote+"/"+suffix, bytes.NewReader(imgListJson))
+
+	utils.Debugf("Image list pushed to index:\n%s\n", imgListJSON)
+
+	req, err := http.NewRequest("PUT", auth.IndexServerAddress()+"/repositories/"+remote+"/"+suffix, bytes.NewReader(imgListJSON))
 	if err != nil {
 		return nil, err
 	}
 	req.SetBasicAuth(r.authConfig.Username, r.authConfig.Password)
-	req.ContentLength = int64(len(imgListJson))
+	req.ContentLength = int64(len(imgListJSON))
 	req.Header.Set("X-Docker-Token", "true")
 
 	res, err := r.client.Do(req)
@@ -349,12 +355,12 @@ func (r *Registry) PushImageJsonIndex(remote string, imgList []*ImgData, validat
 	// Redirect if necessary
 	for res.StatusCode >= 300 && res.StatusCode < 400 {
 		utils.Debugf("Redirected to %s\n", res.Header.Get("Location"))
-		req, err = http.NewRequest("PUT", res.Header.Get("Location"), bytes.NewReader(imgListJson))
+		req, err = http.NewRequest("PUT", res.Header.Get("Location"), bytes.NewReader(imgListJSON))
 		if err != nil {
 			return nil, err
 		}
 		req.SetBasicAuth(r.authConfig.Username, r.authConfig.Password)
-		req.ContentLength = int64(len(imgListJson))
+		req.ContentLength = int64(len(imgListJSON))
 		req.Header.Set("X-Docker-Token", "true")
 
 		res, err = r.client.Do(req)
@@ -388,11 +394,11 @@ func (r *Registry) PushImageJsonIndex(remote string, imgList []*ImgData, validat
 	}
 	if validate {
 		if res.StatusCode != 204 {
-			if errBody, err := ioutil.ReadAll(res.Body); err != nil {
+			errBody, err := ioutil.ReadAll(res.Body)
+			if err != nil {
 				return nil, err
-			} else {
-				return nil, fmt.Errorf("Error: Status %d trying to push checksums %s: %s", res.StatusCode, remote, errBody)
 			}
+			return nil, fmt.Errorf("Error: Status %d trying to push checksums %s: %s", res.StatusCode, remote, errBody)
 		}
 	}
 
@@ -430,9 +436,14 @@ func (r *Registry) ResetClient(authConfig *auth.AuthConfig) {
 	r.client.Jar = cookiejar.NewCookieJar()
 }
 
-func (r *Registry) GetAuthConfig() *auth.AuthConfig {
+func (r *Registry) GetAuthConfig(withPasswd bool) *auth.AuthConfig {
+	password := ""
+	if withPasswd {
+		password = r.authConfig.Password
+	}
 	return &auth.AuthConfig{
 		Username: r.authConfig.Username,
+		Password: password,
 		Email:    r.authConfig.Email,
 	}
 }
@@ -450,7 +461,7 @@ type RepositoryData struct {
 }
 
 type ImgData struct {
-	Id       string `json:"id"`
+	ID       string `json:"id"`
 	Checksum string `json:"checksum,omitempty"`
 	Tag      string `json:",omitempty"`
 }
@@ -463,9 +474,17 @@ type Registry struct {
 func NewRegistry(root string) *Registry {
 	// If the auth file does not exist, keep going
 	authConfig, _ := auth.LoadConfig(root)
+
+	httpTransport := &http.Transport{
+		DisableKeepAlives: true,
+		Proxy:             http.ProxyFromEnvironment,
+	}
+
 	r := &Registry{
 		authConfig: authConfig,
-		client:     &http.Client{},
+		client: &http.Client{
+			Transport: httpTransport,
+		},
 	}
 	r.client.Jar = cookiejar.NewCookieJar()
 	return r

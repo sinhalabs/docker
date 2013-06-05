@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const API_VERSION = 1.0
+const APIVERSION = 1.1
 
 func hijackServer(w http.ResponseWriter) (io.ReadCloser, io.Writer, error) {
 	conn, _, err := w.(http.Hijacker).Hijack()
@@ -33,21 +33,31 @@ func parseForm(r *http.Request) error {
 	return nil
 }
 
+func parseMultipartForm(r *http.Request) error {
+	if err := r.ParseMultipartForm(4096); err != nil && !strings.HasPrefix(err.Error(), "mime:") {
+		return err
+	}
+	return nil
+}
+
 func httpError(w http.ResponseWriter, err error) {
 	if strings.HasPrefix(err.Error(), "No such") {
 		http.Error(w, err.Error(), http.StatusNotFound)
 	} else if strings.HasPrefix(err.Error(), "Bad parameter") {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+	} else if strings.HasPrefix(err.Error(), "Impossible") {
+		http.Error(w, err.Error(), http.StatusNotAcceptable)
 	} else {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-func writeJson(w http.ResponseWriter, b []byte) {
+func writeJSON(w http.ResponseWriter, b []byte) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
 
+// FIXME: Use stvconv.ParseBool() instead?
 func getBoolParam(value string) (bool, error) {
 	if value == "1" || strings.ToLower(value) == "true" {
 		return true, nil
@@ -59,22 +69,39 @@ func getBoolParam(value string) (bool, error) {
 }
 
 func getAuth(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	b, err := json.Marshal(srv.registry.GetAuthConfig())
+	// FIXME: Handle multiple login at once
+	// FIXME: return specific error code if config file missing?
+	authConfig, err := auth.LoadConfig(srv.runtime.root)
+	if err != nil {
+		if err != auth.ErrConfigFileMissing {
+			return err
+		}
+		authConfig = &auth.AuthConfig{}
+	}
+	b, err := json.Marshal(&auth.AuthConfig{Username: authConfig.Username, Email: authConfig.Email})
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
 func postAuth(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	// FIXME: Handle multiple login at once
 	config := &auth.AuthConfig{}
 	if err := json.NewDecoder(r.Body).Decode(config); err != nil {
 		return err
 	}
 
-	if config.Username == srv.registry.GetAuthConfig().Username {
-		config.Password = srv.registry.GetAuthConfig().Password
+	authConfig, err := auth.LoadConfig(srv.runtime.root)
+	if err != nil {
+		if err != auth.ErrConfigFileMissing {
+			return err
+		}
+		authConfig = &auth.AuthConfig{}
+	}
+	if config.Username == authConfig.Username {
+		config.Password = authConfig.Password
 	}
 
 	newAuthConfig := auth.NewAuthConfig(config.Username, config.Password, config.Email, srv.runtime.root)
@@ -82,14 +109,13 @@ func postAuth(srv *Server, version float64, w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		return err
 	}
-	srv.registry.ResetClient(newAuthConfig)
 
 	if status != "" {
-		b, err := json.Marshal(&ApiAuth{Status: status})
+		b, err := json.Marshal(&APIAuth{Status: status})
 		if err != nil {
 			return err
 		}
-		writeJson(w, b)
+		writeJSON(w, b)
 		return nil
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -102,7 +128,7 @@ func getVersion(srv *Server, version float64, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -131,7 +157,7 @@ func getContainersExport(srv *Server, version float64, w http.ResponseWriter, r 
 	return nil
 }
 
-func getImagesJson(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+func getImagesJSON(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	if err := parseForm(r); err != nil {
 		return err
 	}
@@ -150,7 +176,7 @@ func getImagesJson(srv *Server, version float64, w http.ResponseWriter, r *http.
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -167,7 +193,7 @@ func getInfo(srv *Server, version float64, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -184,7 +210,7 @@ func getImagesHistory(srv *Server, version float64, w http.ResponseWriter, r *ht
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -201,11 +227,11 @@ func getContainersChanges(srv *Server, version float64, w http.ResponseWriter, r
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
-func getContainersPs(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+func getContainersJSON(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	if err := parseForm(r); err != nil {
 		return err
 	}
@@ -225,7 +251,7 @@ func getContainersPs(srv *Server, version float64, w http.ResponseWriter, r *htt
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -268,12 +294,12 @@ func postCommit(srv *Server, version float64, w http.ResponseWriter, r *http.Req
 	if err != nil {
 		return err
 	}
-	b, err := json.Marshal(&ApiId{id})
+	b, err := json.Marshal(&APIID{id})
 	if err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -288,13 +314,25 @@ func postImagesCreate(srv *Server, version float64, w http.ResponseWriter, r *ht
 	tag := r.Form.Get("tag")
 	repo := r.Form.Get("repo")
 
+	if version > 1.0 {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	sf := utils.NewStreamFormatter(version > 1.0)
 	if image != "" { //pull
 		registry := r.Form.Get("registry")
-		if err := srv.ImagePull(image, tag, registry, w); err != nil {
+		if err := srv.ImagePull(image, tag, registry, w, sf); err != nil {
+			if sf.Used() {
+				w.Write(sf.FormatError(err))
+				return nil
+			}
 			return err
 		}
 	} else { //import
-		if err := srv.ImageImport(src, repo, tag, r.Body, w); err != nil {
+		if err := srv.ImageImport(src, repo, tag, r.Body, w, sf); err != nil {
+			if sf.Used() {
+				w.Write(sf.FormatError(err))
+				return nil
+			}
 			return err
 		}
 	}
@@ -315,7 +353,7 @@ func getImagesSearch(srv *Server, version float64, w http.ResponseWriter, r *htt
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -330,10 +368,22 @@ func postImagesInsert(srv *Server, version float64, w http.ResponseWriter, r *ht
 		return fmt.Errorf("Missing parameter")
 	}
 	name := vars["name"]
-
-	if err := srv.ImageInsert(name, url, path, w); err != nil {
+	if version > 1.0 {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	sf := utils.NewStreamFormatter(version > 1.0)
+	imgID, err := srv.ImageInsert(name, url, path, w, sf)
+	if err != nil {
+		if sf.Used() {
+			w.Write(sf.FormatError(err))
+			return nil
+		}
+	}
+	b, err := json.Marshal(&APIID{ID: imgID})
+	if err != nil {
 		return err
 	}
+	writeJSON(w, b)
 	return nil
 }
 
@@ -347,8 +397,15 @@ func postImagesPush(srv *Server, version float64, w http.ResponseWriter, r *http
 		return fmt.Errorf("Missing parameter")
 	}
 	name := vars["name"]
-
-	if err := srv.ImagePush(name, registry, w); err != nil {
+	if version > 1.0 {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	sf := utils.NewStreamFormatter(version > 1.0)
+	if err := srv.ImagePush(name, registry, w, sf); err != nil {
+		if sf.Used() {
+			w.Write(sf.FormatError(err))
+			return nil
+		}
 		return err
 	}
 	return nil
@@ -364,8 +421,8 @@ func postContainersCreate(srv *Server, version float64, w http.ResponseWriter, r
 		return err
 	}
 
-	out := &ApiRun{
-		Id: id,
+	out := &APIRun{
+		ID: id,
 	}
 	if config.Memory > 0 && !srv.runtime.capabilities.MemoryLimit {
 		log.Println("WARNING: Your kernel does not support memory limit capabilities. Limitation discarded.")
@@ -380,7 +437,7 @@ func postContainersCreate(srv *Server, version float64, w http.ResponseWriter, r
 		return err
 	}
 	w.WriteHeader(http.StatusCreated)
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -477,11 +534,33 @@ func postContainersWait(srv *Server, version float64, w http.ResponseWriter, r *
 	if err != nil {
 		return err
 	}
-	b, err := json.Marshal(&ApiWait{StatusCode: status})
+	b, err := json.Marshal(&APIWait{StatusCode: status})
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
+	return nil
+}
+
+func postContainersResize(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if err := parseForm(r); err != nil {
+		return err
+	}
+	height, err := strconv.Atoi(r.Form.Get("h"))
+	if err != nil {
+		return err
+	}
+	width, err := strconv.Atoi(r.Form.Get("w"))
+	if err != nil {
+		return err
+	}
+	if vars == nil {
+		return fmt.Errorf("Missing parameter")
+	}
+	name := vars["name"]
+	if err := srv.ContainerResize(name, height, width); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -515,6 +594,10 @@ func postContainersAttach(srv *Server, version float64, w http.ResponseWriter, r
 	}
 	name := vars["name"]
 
+	if _, err := srv.ContainerInspect(name); err != nil {
+		return err
+	}
+
 	in, out, err := hijackServer(w)
 	if err != nil {
 		return err
@@ -542,7 +625,7 @@ func getContainersByName(srv *Server, version float64, w http.ResponseWriter, r 
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
@@ -560,17 +643,17 @@ func getImagesByName(srv *Server, version float64, w http.ResponseWriter, r *htt
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
 	return nil
 }
 
 func postImagesGetCache(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	apiConfig := &ApiImageConfig{}
+	apiConfig := &APIImageConfig{}
 	if err := json.NewDecoder(r.Body).Decode(apiConfig); err != nil {
 		return err
 	}
 
-	image, err := srv.ImageGetCached(apiConfig.Id, apiConfig.Config)
+	image, err := srv.ImageGetCached(apiConfig.ID, apiConfig.Config)
 	if err != nil {
 		return err
 	}
@@ -578,12 +661,45 @@ func postImagesGetCache(srv *Server, version float64, w http.ResponseWriter, r *
 		w.WriteHeader(http.StatusNotFound)
 		return nil
 	}
-	apiId := &ApiId{Id: image.Id}
-	b, err := json.Marshal(apiId)
+	apiID := &APIID{ID: image.ID}
+	b, err := json.Marshal(apiID)
 	if err != nil {
 		return err
 	}
-	writeJson(w, b)
+	writeJSON(w, b)
+	return nil
+}
+
+func postBuild(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if err := r.ParseMultipartForm(4096); err != nil {
+		return err
+	}
+	remote := r.FormValue("t")
+	tag := ""
+	if strings.Contains(remote, ":") {
+		remoteParts := strings.Split(remote, ":")
+		tag = remoteParts[1]
+		remote = remoteParts[0]
+	}
+
+	dockerfile, _, err := r.FormFile("Dockerfile")
+	if err != nil {
+		return err
+	}
+
+	context, _, err := r.FormFile("Context")
+	if err != nil {
+		if err != http.ErrMissingFile {
+			return err
+		}
+	}
+
+	b := NewBuildFile(srv, utils.NewWriteFlusher(w))
+	if id, err := b.Build(dockerfile, context); err != nil {
+		fmt.Fprintf(w, "Error build: %s\n", err)
+	} else if remote != "" {
+		srv.runtime.repositories.Set(remote, tag, id, false)
+	}
 	return nil
 }
 
@@ -596,12 +712,13 @@ func ListenAndServe(addr string, srv *Server, logging bool) error {
 			"/auth":                         getAuth,
 			"/version":                      getVersion,
 			"/info":                         getInfo,
-			"/images/json":                  getImagesJson,
+			"/images/json":                  getImagesJSON,
 			"/images/viz":                   getImagesViz,
 			"/images/search":                getImagesSearch,
 			"/images/{name:.*}/history":     getImagesHistory,
 			"/images/{name:.*}/json":        getImagesByName,
-			"/containers/ps":                getContainersPs,
+			"/containers/ps":                getContainersJSON,
+			"/containers/json":              getContainersJSON,
 			"/containers/{name:.*}/export":  getContainersExport,
 			"/containers/{name:.*}/changes": getContainersChanges,
 			"/containers/{name:.*}/json":    getContainersByName,
@@ -609,6 +726,7 @@ func ListenAndServe(addr string, srv *Server, logging bool) error {
 		"POST": {
 			"/auth":                         postAuth,
 			"/commit":                       postCommit,
+			"/build":                        postBuild,
 			"/images/create":                postImagesCreate,
 			"/images/{name:.*}/insert":      postImagesInsert,
 			"/images/{name:.*}/push":        postImagesPush,
@@ -620,6 +738,7 @@ func ListenAndServe(addr string, srv *Server, logging bool) error {
 			"/containers/{name:.*}/start":   postContainersStart,
 			"/containers/{name:.*}/stop":    postContainersStop,
 			"/containers/{name:.*}/wait":    postContainersWait,
+			"/containers/{name:.*}/resize":  postContainersResize,
 			"/containers/{name:.*}/attach":  postContainersAttach,
 		},
 		"DELETE": {
@@ -648,9 +767,9 @@ func ListenAndServe(addr string, srv *Server, logging bool) error {
 				}
 				version, err := strconv.ParseFloat(mux.Vars(r)["version"], 64)
 				if err != nil {
-					version = API_VERSION
+					version = APIVERSION
 				}
-				if version == 0 || version > API_VERSION {
+				if version == 0 || version > APIVERSION {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
@@ -662,6 +781,5 @@ func ListenAndServe(addr string, srv *Server, logging bool) error {
 			r.Path(localRoute).Methods(localMethod).HandlerFunc(f)
 		}
 	}
-
 	return http.ListenAndServe(addr, r)
 }

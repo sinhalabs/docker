@@ -422,6 +422,7 @@ func (srv *Server) pullRepository(r *registry.Registry, out io.Writer, remote, a
 }
 
 func (srv *Server) ImagePull(name, tag, endpoint string, out io.Writer, sf *utils.StreamFormatter) error {
+	out = utils.NewWriteFlusher(out)
 	r := registry.NewRegistry(srv.runtime.root)
 	err := srv.pullRepository(r, out, name, tag, endpoint, sf)
 	if err != nil && endpoint != "" {

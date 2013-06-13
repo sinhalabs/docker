@@ -60,7 +60,7 @@ lxc.cgroup.devices.allow = c 5:2 rwm
 lxc.cgroup.devices.allow = c 10:200 rwm
 
 # fuse
-#lxc.cgroup.devices.allow = c 10:229 rwm
+lxc.cgroup.devices.allow = c 10:229 rwm
 
 # rtc
 #lxc.cgroup.devices.allow = c 254:0 rwm
@@ -86,7 +86,8 @@ lxc.mount.entry = {{$realPath}} {{$ROOTFS}}/{{$virtualPath}} none bind,rw 0 0
 {{end}}
 
 # drop linux capabilities (apply mainly to the user root in the container)
-lxc.cap.drop = audit_control audit_write mac_admin mac_override mknod setfcap setpcap sys_admin sys_boot sys_module sys_nice sys_pacct sys_rawio sys_resource sys_time sys_tty_config
+#lxc.cap.drop = audit_control audit_write mac_admin mac_override mknod setfcap setpcap sys_admin sys_boot sys_module sys_nice sys_pacct sys_rawio sys_resource sys_time sys_tty_config
+lxc.cap.drop = audit_control audit_write mac_admin mac_override setfcap setpcap sys_boot sys_module sys_nice sys_pacct sys_rawio sys_resource sys_time sys_tty_config
 
 # limits
 {{if .Config.Memory}}

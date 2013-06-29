@@ -90,6 +90,15 @@ func (graph *Graph) Get(name string) (*Image, error) {
 		return nil, fmt.Errorf("Image stored at '%s' has wrong id '%s'", id, img.ID)
 	}
 	img.graph = graph
+	if img.Size == 0 {
+		root, err := img.root()
+		if err != nil {
+			return nil, err
+		}
+		if err := StoreSize(img, root); err != nil {
+			return nil, err
+		}
+	}
 	graph.lockSumMap.Lock()
 	defer graph.lockSumMap.Unlock()
 	if _, exists := graph.checksumLock[img.ID]; !exists {
@@ -180,7 +189,7 @@ func (graph *Graph) Mktemp(id string) (string, error) {
 		return "", fmt.Errorf("Couldn't create temp: %s", err)
 	}
 	if tmp.Exists(id) {
-		return "", fmt.Errorf("Image %d already exists", id)
+		return "", fmt.Errorf("Image %s already exists", id)
 	}
 	return tmp.imageRoot(id), nil
 }

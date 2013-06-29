@@ -32,6 +32,7 @@ type Runtime struct {
 	autoRestart    bool
 	volumes        *Graph
 	srv            *Server
+	Dns            []string
 }
 
 var sysInitPath string
@@ -143,7 +144,9 @@ func (runtime *Runtime) Register(container *Container) error {
 				utils.Debugf("Restarting")
 				container.State.Ghost = false
 				container.State.setStopped(0)
-				if err := container.Start(); err != nil {
+				// assume empty host config
+				hostConfig := &HostConfig{}
+				if err := container.Start(hostConfig); err != nil {
 					return err
 				}
 				nomonitor = true
@@ -245,11 +248,12 @@ func (runtime *Runtime) UpdateCapabilities(quiet bool) {
 }
 
 // FIXME: harmonize with NewGraph()
-func NewRuntime(autoRestart bool) (*Runtime, error) {
-	runtime, err := NewRuntimeFromDirectory("/var/lib/docker", autoRestart)
+func NewRuntime(flGraphPath string, autoRestart bool, dns []string) (*Runtime, error) {
+	runtime, err := NewRuntimeFromDirectory(flGraphPath, autoRestart)
 	if err != nil {
 		return nil, err
 	}
+	runtime.Dns = dns
 
 	if k, err := utils.GetKernelVersion(); err != nil {
 		log.Printf("WARNING: %s\n", err)

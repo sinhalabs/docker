@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/dotcloud/docker/auth"
-	"github.com/dotcloud/docker/registry"
 	"github.com/dotcloud/docker/utils"
 	"io"
 	"net"
@@ -18,7 +17,31 @@ import (
 	"time"
 )
 
-func TestGetAuth(t *testing.T) {
+func TestGetBoolParam(t *testing.T) {
+	if ret, err := getBoolParam("true"); err != nil || !ret {
+		t.Fatalf("true -> true, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam("True"); err != nil || !ret {
+		t.Fatalf("True -> true, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam("1"); err != nil || !ret {
+		t.Fatalf("1 -> true, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam(""); err != nil || ret {
+		t.Fatalf("\"\" -> false, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam("false"); err != nil || ret {
+		t.Fatalf("false -> false, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam("0"); err != nil || ret {
+		t.Fatalf("0 -> false, nil | got %t %s", ret, err)
+	}
+	if ret, err := getBoolParam("faux"); err == nil || ret {
+		t.Fatalf("faux -> false, err | got %t %s", ret, err)
+	}
+}
+
+func TestPostAuth(t *testing.T) {
 	runtime, err := newTestRuntime()
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +76,6 @@ func TestGetAuth(t *testing.T) {
 
 	if r.Code != http.StatusOK && r.Code != 0 {
 		t.Fatalf("%d OK or 0 expected, received %d\n", http.StatusOK, r.Code)
-	}
-
-	newAuthConfig := registry.NewRegistry(runtime.root).GetAuthConfig(false)
-	if newAuthConfig.Username != authConfig.Username ||
-		newAuthConfig.Email != authConfig.Email {
-		t.Fatalf("The auth configuration hasn't been set correctly")
 	}
 }
 
@@ -494,40 +511,6 @@ func TestGetContainersByName(t *testing.T) {
 	}
 }
 
-func TestPostAuth(t *testing.T) {
-	runtime, err := newTestRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer nuke(runtime)
-
-	srv := &Server{
-		runtime: runtime,
-	}
-
-	config := &auth.AuthConfig{
-		Username: "utest",
-		Email:    "utest@yopmail.com",
-	}
-
-	authStr := auth.EncodeAuth(config)
-	auth.SaveConfig(runtime.root, authStr, config.Email)
-
-	r := httptest.NewRecorder()
-	if err := getAuth(srv, APIVERSION, r, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	authConfig := &auth.AuthConfig{}
-	if err := json.Unmarshal(r.Body.Bytes(), authConfig); err != nil {
-		t.Fatal(err)
-	}
-
-	if authConfig.Username != config.Username || authConfig.Email != config.Email {
-		t.Errorf("The retrieve auth mismatch with the one set.")
-	}
-}
-
 func TestPostCommit(t *testing.T) {
 	runtime, err := newTestRuntime()
 	if err != nil {
@@ -890,7 +873,8 @@ func TestPostContainersKill(t *testing.T) {
 	}
 	defer runtime.Destroy(container)
 
-	if err := container.Start(); err != nil {
+	hostConfig := &HostConfig{}
+	if err := container.Start(hostConfig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -934,7 +918,8 @@ func TestPostContainersRestart(t *testing.T) {
 	}
 	defer runtime.Destroy(container)
 
-	if err := container.Start(); err != nil {
+	hostConfig := &HostConfig{}
+	if err := container.Start(hostConfig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -990,8 +975,15 @@ func TestPostContainersStart(t *testing.T) {
 	}
 	defer runtime.Destroy(container)
 
+	hostConfigJSON, err := json.Marshal(&HostConfig{})
+
+	req, err := http.NewRequest("POST", "/containers/"+container.ID+"/start", bytes.NewReader(hostConfigJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	r := httptest.NewRecorder()
-	if err := postContainersStart(srv, APIVERSION, r, nil, map[string]string{"name": container.ID}); err != nil {
+	if err := postContainersStart(srv, APIVERSION, r, req, map[string]string{"name": container.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if r.Code != http.StatusNoContent {
@@ -1006,7 +998,7 @@ func TestPostContainersStart(t *testing.T) {
 	}
 
 	r = httptest.NewRecorder()
-	if err = postContainersStart(srv, APIVERSION, r, nil, map[string]string{"name": container.ID}); err == nil {
+	if err = postContainersStart(srv, APIVERSION, r, req, map[string]string{"name": container.ID}); err == nil {
 		t.Fatalf("A running containter should be able to be started")
 	}
 
@@ -1036,7 +1028,8 @@ func TestPostContainersStop(t *testing.T) {
 	}
 	defer runtime.Destroy(container)
 
-	if err := container.Start(); err != nil {
+	hostConfig := &HostConfig{}
+	if err := container.Start(hostConfig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1085,7 +1078,8 @@ func TestPostContainersWait(t *testing.T) {
 	}
 	defer runtime.Destroy(container)
 
-	if err := container.Start(); err != nil {
+	hostConfig := &HostConfig{}
+	if err := container.Start(hostConfig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1130,7 +1124,8 @@ func TestPostContainersAttach(t *testing.T) {
 	defer runtime.Destroy(container)
 
 	// Start the process
-	if err := container.Start(); err != nil {
+	hostConfig := &HostConfig{}
+	if err := container.Start(hostConfig); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1307,8 +1302,63 @@ func TestGetEnabledCors(t *testing.T) {
 }
 
 func TestDeleteImages(t *testing.T) {
-	//FIXME: Implement this test
-	t.Log("Test not implemented")
+	runtime, err := newTestRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nuke(runtime)
+
+	srv := &Server{runtime: runtime}
+
+	if err := srv.runtime.repositories.Set("test", "test", unitTestImageName, true); err != nil {
+		t.Fatal(err)
+	}
+
+	images, err := srv.Images(false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(images) != 2 {
+		t.Errorf("Excepted 2 images, %d found", len(images))
+	}
+
+	req, err := http.NewRequest("DELETE", "/images/test:test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRecorder()
+	if err := deleteImages(srv, APIVERSION, r, req, map[string]string{"name": "test:test"}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Code != http.StatusOK {
+		t.Fatalf("%d OK expected, received %d\n", http.StatusOK, r.Code)
+	}
+
+	var outs []APIRmi
+	if err := json.Unmarshal(r.Body.Bytes(), &outs); err != nil {
+		t.Fatal(err)
+	}
+	if len(outs) != 1 {
+		t.Fatalf("Expected %d event (untagged), got %d", 1, len(outs))
+	}
+	images, err = srv.Images(false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(images) != 1 {
+		t.Errorf("Excepted 1 image, %d found", len(images))
+	}
+
+	/*	if c := runtime.Get(container.Id); c != nil {
+			t.Fatalf("The container as not been deleted")
+		}
+
+		if _, err := os.Stat(path.Join(container.rwPath(), "test")); err == nil {
+			t.Fatalf("The test file has not been deleted")
+		} */
 }
 
 // Mocked types for tests

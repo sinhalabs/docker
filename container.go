@@ -58,28 +58,31 @@ type Container struct {
 }
 
 type Config struct {
-	Hostname     string
-	User         string
-	Memory       int64 // Memory limit (in bytes)
-	MemorySwap   int64 // Total memory usage (memory + swap); set `-1' to disable swap
-	CpuShares    int64 // CPU shares (relative weight vs. other containers)
-	AttachStdin  bool
-	AttachStdout bool
-	AttachStderr bool
-	PortSpecs    []string
-	Tty          bool // Attach standard streams to a tty, including stdin if it is not closed.
-	OpenStdin    bool // Open stdin
-	StdinOnce    bool // If true, close stdin after the 1 attached client disconnects.
-	Env          []string
-	Cmd          []string
-	Dns          []string
-	Image        string // Name of the image as it was passed by the operator (eg. could be symbolic)
-	Volumes      map[string]struct{}
-	VolumesFrom  string
+	Hostname        string
+	User            string
+	Memory          int64 // Memory limit (in bytes)
+	MemorySwap      int64 // Total memory usage (memory + swap); set `-1' to disable swap
+	CpuShares       int64 // CPU shares (relative weight vs. other containers)
+	AttachStdin     bool
+	AttachStdout    bool
+	AttachStderr    bool
+	PortSpecs       []string
+	Tty             bool // Attach standard streams to a tty, including stdin if it is not closed.
+	OpenStdin       bool // Open stdin
+	StdinOnce       bool // If true, close stdin after the 1 attached client disconnects.
+	Env             []string
+	Cmd             []string
+	Dns             []string
+	Image           string // Name of the image as it was passed by the operator (eg. could be symbolic)
+	Volumes         map[string]struct{}
+	VolumesFrom     string
+	Entrypoint      []string
+	NetworkDisabled bool
 }
 
 type HostConfig struct {
-	Binds []string
+	Binds           []string
+	ContainerIDFile string
 }
 
 type BindMap struct {
@@ -92,6 +95,7 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 	cmd := Subcmd("run", "[OPTIONS] IMAGE [COMMAND] [ARG...]", "Run a command in a new container")
 	if len(args) > 0 && args[0] != "--help" {
 		cmd.SetOutput(ioutil.Discard)
+		cmd.Usage = nil
 	}
 
 	flHostname := cmd.String("h", "", "Container host name")
@@ -102,6 +106,8 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 	flStdin := cmd.Bool("i", false, "Keep stdin open even if not attached")
 	flTty := cmd.Bool("t", false, "Allocate a pseudo-tty")
 	flMemory := cmd.Int64("m", 0, "Memory limit (in bytes)")
+	flContainerIDFile := cmd.String("cidfile", "", "Write the container ID to the file")
+	flNetwork := cmd.Bool("n", true, "Enable networking for this container")
 
 	if capabilities != nil && *flMemory > 0 && !capabilities.MemoryLimit {
 		//fmt.Fprintf(stdout, "WARNING: Your kernel does not support memory limit capabilities. Limitation discarded.\n")
@@ -120,12 +126,10 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 	cmd.Var(&flDns, "dns", "Set custom dns servers")
 
 	flVolumes := NewPathOpts()
-	cmd.Var(flVolumes, "v", "Attach a data volume")
+	cmd.Var(flVolumes, "v", "Bind mount a volume (e.g. from the host: -v /host:/container, from docker: -v /container)")
 
 	flVolumesFrom := cmd.String("volumes-from", "", "Mount volumes from the specified container")
-
-	var flBinds ListOpts
-	cmd.Var(&flBinds, "b", "Bind mount a volume from the host (e.g. -b /host:/container)")
+	flEntrypoint := cmd.String("entrypoint", "", "Overwrite the default entrypoint of the image")
 
 	if err := cmd.Parse(args); err != nil {
 		return nil, nil, cmd, err
@@ -144,15 +148,22 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 		}
 	}
 
+	var binds []string
+
 	// add any bind targets to the list of container volumes
-	for _, bind := range flBinds {
+	for bind := range flVolumes {
 		arr := strings.Split(bind, ":")
-		dstDir := arr[1]
-		flVolumes[dstDir] = struct{}{}
+		if len(arr) > 1 {
+			dstDir := arr[1]
+			flVolumes[dstDir] = struct{}{}
+			binds = append(binds, bind)
+			delete(flVolumes, bind)
+		}
 	}
 
 	parsedArgs := cmd.Args()
 	runCmd := []string{}
+	entrypoint := []string{}
 	image := ""
 	if len(parsedArgs) >= 1 {
 		image = cmd.Arg(0)
@@ -160,26 +171,33 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 	if len(parsedArgs) > 1 {
 		runCmd = parsedArgs[1:]
 	}
+	if *flEntrypoint != "" {
+		entrypoint = []string{*flEntrypoint}
+	}
+
 	config := &Config{
-		Hostname:     *flHostname,
-		PortSpecs:    flPorts,
-		User:         *flUser,
-		Tty:          *flTty,
-		OpenStdin:    *flStdin,
-		Memory:       *flMemory,
-		CpuShares:    *flCpuShares,
-		AttachStdin:  flAttach.Get("stdin"),
-		AttachStdout: flAttach.Get("stdout"),
-		AttachStderr: flAttach.Get("stderr"),
-		Env:          flEnv,
-		Cmd:          runCmd,
-		Dns:          flDns,
-		Image:        image,
-		Volumes:      flVolumes,
-		VolumesFrom:  *flVolumesFrom,
+		Hostname:        *flHostname,
+		PortSpecs:       flPorts,
+		User:            *flUser,
+		Tty:             *flTty,
+		NetworkDisabled: !*flNetwork,
+		OpenStdin:       *flStdin,
+		Memory:          *flMemory,
+		CpuShares:       *flCpuShares,
+		AttachStdin:     flAttach.Get("stdin"),
+		AttachStdout:    flAttach.Get("stdout"),
+		AttachStderr:    flAttach.Get("stderr"),
+		Env:             flEnv,
+		Cmd:             runCmd,
+		Dns:             flDns,
+		Image:           image,
+		Volumes:         flVolumes,
+		VolumesFrom:     *flVolumesFrom,
+		Entrypoint:      entrypoint,
 	}
 	hostConfig := &HostConfig{
-		Binds: flBinds,
+		Binds:           binds,
+		ContainerIDFile: *flContainerIDFile,
 	}
 
 	if capabilities != nil && *flMemory > 0 && !capabilities.SwapLimit {
@@ -194,19 +212,24 @@ func ParseRun(args []string, capabilities *Capabilities) (*Config, *HostConfig, 
 	return config, hostConfig, cmd, nil
 }
 
+type PortMapping map[string]string
+
 type NetworkSettings struct {
 	IPAddress   string
 	IPPrefixLen int
 	Gateway     string
 	Bridge      string
-	PortMapping map[string]string
+	PortMapping map[string]PortMapping
 }
 
 // String returns a human-readable description of the port mapping defined in the settings
 func (settings *NetworkSettings) PortMappingHuman() string {
 	var mapping []string
-	for private, public := range settings.PortMapping {
+	for private, public := range settings.PortMapping["Tcp"] {
 		mapping = append(mapping, fmt.Sprintf("%s->%s", public, private))
+	}
+	for private, public := range settings.PortMapping["Udp"] {
+		mapping = append(mapping, fmt.Sprintf("%s->%s/udp", public, private))
 	}
 	sort.Strings(mapping)
 	return strings.Join(mapping, ", ")
@@ -255,6 +278,26 @@ func (container *Container) ToDisk() (err error) {
 		return
 	}
 	return ioutil.WriteFile(container.jsonPath(), data, 0666)
+}
+
+func (container *Container) ReadHostConfig() (*HostConfig, error) {
+	data, err := ioutil.ReadFile(container.hostConfigPath())
+	if err != nil {
+		return &HostConfig{}, err
+	}
+	hostConfig := &HostConfig{}
+	if err := json.Unmarshal(data, hostConfig); err != nil {
+		return &HostConfig{}, err
+	}
+	return hostConfig, nil
+}
+
+func (container *Container) SaveHostConfig(hostConfig *HostConfig) (err error) {
+	data, err := json.Marshal(hostConfig)
+	if err != nil {
+		return
+	}
+	return ioutil.WriteFile(container.hostConfigPath(), data, 0666)
 }
 
 func (container *Container) generateLXCConfig() error {
@@ -458,8 +501,12 @@ func (container *Container) Attach(stdin io.ReadCloser, stdinCloser io.Closer, s
 }
 
 func (container *Container) Start(hostConfig *HostConfig) error {
-	container.State.lock()
-	defer container.State.unlock()
+	container.State.Lock()
+	defer container.State.Unlock()
+
+	if len(hostConfig.Binds) == 0 {
+		hostConfig, _ = container.ReadHostConfig()
+	}
 
 	if container.State.Running {
 		return fmt.Errorf("The container %s is already running.", container.ID)
@@ -467,8 +514,12 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 	if err := container.EnsureMounted(); err != nil {
 		return err
 	}
-	if err := container.allocateNetwork(); err != nil {
-		return err
+	if container.runtime.networkManager.disabled {
+		container.Config.NetworkDisabled = true
+	} else {
+		if err := container.allocateNetwork(); err != nil {
+			return err
+		}
 	}
 
 	// Make sure the config is compatible with the current kernel
@@ -480,13 +531,11 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 		log.Printf("WARNING: Your kernel does not support swap limit capabilities. Limitation discarded.\n")
 		container.Config.MemorySwap = -1
 	}
-	container.Volumes = make(map[string]string)
-	container.VolumesRW = make(map[string]bool)
 
 	// Create the requested bind mounts
 	binds := make(map[string]BindMap)
 	// Define illegal container destinations
-	illegal_dsts := []string{"/", "."}
+	illegalDsts := []string{"/", "."}
 
 	for _, bind := range hostConfig.Binds {
 		// FIXME: factorize bind parsing in parseBind
@@ -505,7 +554,7 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 		}
 
 		// Bail if trying to mount to an illegal destination
-		for _, illegal := range illegal_dsts {
+		for _, illegal := range illegalDsts {
 			if dst == illegal {
 				return fmt.Errorf("Illegal bind destination: %s", dst)
 			}
@@ -521,30 +570,35 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 
 	// FIXME: evaluate volumes-from before individual volumes, so that the latter can override the former.
 	// Create the requested volumes volumes
-	for volPath := range container.Config.Volumes {
-		volPath = path.Clean(volPath)
-		// If an external bind is defined for this volume, use that as a source
-		if bindMap, exists := binds[volPath]; exists {
-			container.Volumes[volPath] = bindMap.SrcPath
-			if strings.ToLower(bindMap.Mode) == "rw" {
-				container.VolumesRW[volPath] = true
+	if container.Volumes == nil || len(container.Volumes) == 0 {
+		container.Volumes = make(map[string]string)
+		container.VolumesRW = make(map[string]bool)
+
+		for volPath := range container.Config.Volumes {
+			volPath = path.Clean(volPath)
+			// If an external bind is defined for this volume, use that as a source
+			if bindMap, exists := binds[volPath]; exists {
+				container.Volumes[volPath] = bindMap.SrcPath
+				if strings.ToLower(bindMap.Mode) == "rw" {
+					container.VolumesRW[volPath] = true
+				}
+				// Otherwise create an directory in $ROOT/volumes/ and use that
+			} else {
+				c, err := container.runtime.volumes.Create(nil, container, "", "", nil)
+				if err != nil {
+					return err
+				}
+				srcPath, err := c.layer()
+				if err != nil {
+					return err
+				}
+				container.Volumes[volPath] = srcPath
+				container.VolumesRW[volPath] = true // RW by default
 			}
-			// Otherwise create an directory in $ROOT/volumes/ and use that
-		} else {
-			c, err := container.runtime.volumes.Create(nil, container, "", "", nil)
-			if err != nil {
-				return err
+			// Create the mountpoint
+			if err := os.MkdirAll(path.Join(container.RootfsPath(), volPath), 0755); err != nil {
+				return nil
 			}
-			srcPath, err := c.layer()
-			if err != nil {
-				return err
-			}
-			container.Volumes[volPath] = srcPath
-			container.VolumesRW[volPath] = true // RW by default
-		}
-		// Create the mountpoint
-		if err := os.MkdirAll(path.Join(container.RootfsPath(), volPath), 0755); err != nil {
-			return nil
 		}
 	}
 
@@ -561,6 +615,9 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 				return nil
 			}
 			container.Volumes[volPath] = id
+			if isRW, exists := c.VolumesRW[volPath]; exists {
+				container.VolumesRW[volPath] = isRW
+			}
 		}
 	}
 
@@ -576,7 +633,9 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 	}
 
 	// Networking
-	params = append(params, "-g", container.network.Gateway.String())
+	if !container.Config.NetworkDisabled {
+		params = append(params, "-g", container.network.Gateway.String())
+	}
 
 	// User
 	if container.Config.User != "" {
@@ -591,6 +650,7 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 	params = append(params,
 		"-e", "HOME=/",
 		"-e", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"-e", "container=lxc",
 	)
 
 	for _, elem := range container.Config.Env {
@@ -604,10 +664,10 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 	container.cmd = exec.Command("lxc-start", params...)
 
 	// Setup logging of stdout and stderr to disk
-	if err := container.runtime.LogToDisk(container.stdout, container.logPath("stdout")); err != nil {
+	if err := container.runtime.LogToDisk(container.stdout, container.logPath("json"), "stdout"); err != nil {
 		return err
 	}
-	if err := container.runtime.LogToDisk(container.stderr, container.logPath("stderr")); err != nil {
+	if err := container.runtime.LogToDisk(container.stderr, container.logPath("json"), "stderr"); err != nil {
 		return err
 	}
 
@@ -628,6 +688,7 @@ func (container *Container) Start(hostConfig *HostConfig) error {
 	container.waitLock = make(chan struct{})
 
 	container.ToDisk()
+	container.SaveHostConfig(hostConfig)
 	go container.monitor()
 	return nil
 }
@@ -665,29 +726,37 @@ func (container *Container) StdinPipe() (io.WriteCloser, error) {
 
 func (container *Container) StdoutPipe() (io.ReadCloser, error) {
 	reader, writer := io.Pipe()
-	container.stdout.AddWriter(writer)
+	container.stdout.AddWriter(writer, "")
 	return utils.NewBufReader(reader), nil
 }
 
 func (container *Container) StderrPipe() (io.ReadCloser, error) {
 	reader, writer := io.Pipe()
-	container.stderr.AddWriter(writer)
+	container.stderr.AddWriter(writer, "")
 	return utils.NewBufReader(reader), nil
 }
 
 func (container *Container) allocateNetwork() error {
+	if container.Config.NetworkDisabled {
+		return nil
+	}
+
 	iface, err := container.runtime.networkManager.Allocate()
 	if err != nil {
 		return err
 	}
-	container.NetworkSettings.PortMapping = make(map[string]string)
+	container.NetworkSettings.PortMapping = make(map[string]PortMapping)
+	container.NetworkSettings.PortMapping["Tcp"] = make(PortMapping)
+	container.NetworkSettings.PortMapping["Udp"] = make(PortMapping)
 	for _, spec := range container.Config.PortSpecs {
 		nat, err := iface.AllocatePort(spec)
 		if err != nil {
 			iface.Release()
 			return err
 		}
-		container.NetworkSettings.PortMapping[strconv.Itoa(nat.Backend)] = strconv.Itoa(nat.Frontend)
+		proto := strings.Title(nat.Proto)
+		backend, frontend := strconv.Itoa(nat.Backend), strconv.Itoa(nat.Frontend)
+		container.NetworkSettings.PortMapping[proto][backend] = frontend
 	}
 	container.network = iface
 	container.NetworkSettings.Bridge = container.runtime.networkManager.bridgeIface
@@ -698,6 +767,9 @@ func (container *Container) allocateNetwork() error {
 }
 
 func (container *Container) releaseNetwork() {
+	if container.Config.NetworkDisabled {
+		return
+	}
 	container.network.Release()
 	container.network = nil
 	container.NetworkSettings = &NetworkSettings{}
@@ -813,8 +885,8 @@ func (container *Container) kill() error {
 }
 
 func (container *Container) Kill() error {
-	container.State.lock()
-	defer container.State.unlock()
+	container.State.Lock()
+	defer container.State.Unlock()
 	if !container.State.Running {
 		return nil
 	}
@@ -822,8 +894,8 @@ func (container *Container) Kill() error {
 }
 
 func (container *Container) Stop(seconds int) error {
-	container.State.lock()
-	defer container.State.unlock()
+	container.State.Lock()
+	defer container.State.Unlock()
 	if !container.State.Running {
 		return nil
 	}
@@ -960,6 +1032,10 @@ func (container *Container) logPath(name string) string {
 
 func (container *Container) ReadLog(name string) (io.Reader, error) {
 	return os.Open(container.logPath(name))
+}
+
+func (container *Container) hostConfigPath() string {
+	return path.Join(container.root, "hostconfig.json")
 }
 
 func (container *Container) jsonPath() string {

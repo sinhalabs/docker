@@ -7,6 +7,7 @@ import (
 	"github.com/dotcloud/docker/utils"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"path"
 	"reflect"
@@ -28,6 +29,7 @@ type buildFile struct {
 	maintainer string
 	config     *Config
 	context    string
+	verbose    bool
 
 	tmpContainers map[string]struct{}
 	tmpImages     map[string]struct{}
@@ -51,20 +53,10 @@ func (b *buildFile) CmdFrom(name string) error {
 	image, err := b.runtime.repositories.LookupImage(name)
 	if err != nil {
 		if b.runtime.graph.IsNotExist(err) {
-
-			var tag, remote string
-			if strings.Contains(name, ":") {
-				remoteParts := strings.Split(name, ":")
-				tag = remoteParts[1]
-				remote = remoteParts[0]
-			} else {
-				remote = name
-			}
-
-			if err := b.srv.ImagePull(remote, tag, "", b.out, utils.NewStreamFormatter(false), nil); err != nil {
+			remote, tag := utils.ParseRepositoryTag(name)
+			if err := b.srv.ImagePull(remote, tag, b.out, utils.NewStreamFormatter(false), nil); err != nil {
 				return err
 			}
-
 			image, err = b.runtime.repositories.LookupImage(name)
 			if err != nil {
 				return err
@@ -141,7 +133,7 @@ func (b *buildFile) CmdEnv(args string) error {
 func (b *buildFile) CmdCmd(args string) error {
 	var cmd []string
 	if err := json.Unmarshal([]byte(args), &cmd); err != nil {
-		utils.Debugf("Error unmarshalling: %s, using /bin/sh -c", err)
+		utils.Debugf("Error unmarshalling: %s, setting cmd to /bin/sh -c", err)
 		cmd = []string{"/bin/sh", "-c", args}
 	}
 	if err := b.commit("", cmd, fmt.Sprintf("CMD %v", cmd)); err != nil {
@@ -165,12 +157,68 @@ func (b *buildFile) CmdCopy(args string) error {
 	return fmt.Errorf("COPY has been deprecated. Please use ADD instead")
 }
 
+func (b *buildFile) CmdEntrypoint(args string) error {
+	if args == "" {
+		return fmt.Errorf("Entrypoint cannot be empty")
+	}
+
+	var entrypoint []string
+	if err := json.Unmarshal([]byte(args), &entrypoint); err != nil {
+		b.config.Entrypoint = []string{"/bin/sh", "-c", args}
+	} else {
+		b.config.Entrypoint = entrypoint
+	}
+	if err := b.commit("", b.config.Cmd, fmt.Sprintf("ENTRYPOINT %s", args)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *buildFile) CmdVolume(args string) error {
+	if args == "" {
+		return fmt.Errorf("Volume cannot be empty")
+	}
+
+	var volume []string
+	if err := json.Unmarshal([]byte(args), &volume); err != nil {
+		volume = []string{args}
+	}
+	if b.config.Volumes == nil {
+		b.config.Volumes = NewPathOpts()
+	}
+	for _, v := range volume {
+		b.config.Volumes[v] = struct{}{}
+	}
+	if err := b.commit("", b.config.Cmd, fmt.Sprintf("VOLUME %s", args)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (b *buildFile) addRemote(container *Container, orig, dest string) error {
 	file, err := utils.Download(orig, ioutil.Discard)
 	if err != nil {
 		return err
 	}
 	defer file.Body.Close()
+
+	// If the destination is a directory, figure out the filename.
+	if strings.HasSuffix(dest, "/") {
+		u, err := url.Parse(orig)
+		if err != nil {
+			return err
+		}
+		path := u.Path
+		if strings.HasSuffix(path, "/") {
+			path = path[:len(path)-1]
+		}
+		parts := strings.Split(path, "/")
+		filename := parts[len(parts)-1]
+		if filename == "" {
+			return fmt.Errorf("cannot determine filename from url: %s", u)
+		}
+		dest = dest + filename
+	}
 
 	return container.Inject(file.Body, dest)
 }
@@ -179,7 +227,7 @@ func (b *buildFile) addContext(container *Container, orig, dest string) error {
 	origPath := path.Join(b.context, orig)
 	destPath := path.Join(container.RootfsPath(), dest)
 	// Preserve the trailing '/'
-	if dest[len(dest)-1] == '/' {
+	if strings.HasSuffix(dest, "/") {
 		destPath = destPath + "/"
 	}
 	fi, err := os.Stat(origPath)
@@ -262,10 +310,21 @@ func (b *buildFile) run() (string, error) {
 	b.tmpContainers[c.ID] = struct{}{}
 	fmt.Fprintf(b.out, " ---> Running in %s\n", utils.TruncateID(c.ID))
 
+	// override the entry point that may have been picked up from the base image
+	c.Path = b.config.Cmd[0]
+	c.Args = b.config.Cmd[1:]
+
 	//start the container
 	hostConfig := &HostConfig{}
 	if err := c.Start(hostConfig); err != nil {
 		return "", err
+	}
+
+	if b.verbose {
+		err = <-c.Attach(nil, nil, b.out, b.out)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	// Wait for it to finish
@@ -390,7 +449,7 @@ func (b *buildFile) Build(context io.Reader) (string, error) {
 	return "", fmt.Errorf("An error occured during the build\n")
 }
 
-func NewBuildFile(srv *Server, out io.Writer) BuildFile {
+func NewBuildFile(srv *Server, out io.Writer, verbose bool) BuildFile {
 	return &buildFile{
 		builder:       NewBuilder(srv.runtime),
 		runtime:       srv.runtime,
@@ -399,5 +458,6 @@ func NewBuildFile(srv *Server, out io.Writer) BuildFile {
 		out:           out,
 		tmpContainers: make(map[string]struct{}),
 		tmpImages:     make(map[string]struct{}),
+		verbose:       verbose,
 	}
 }

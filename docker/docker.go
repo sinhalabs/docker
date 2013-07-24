@@ -28,7 +28,7 @@ func main() {
 	flDaemon := flag.Bool("d", false, "Daemon mode")
 	flDebug := flag.Bool("D", false, "Debug mode")
 	flAutoRestart := flag.Bool("r", false, "Restart previously running containers")
-	bridgeName := flag.String("b", "", "Attach containers to a pre-existing network bridge")
+	bridgeName := flag.String("b", "", "Attach containers to a pre-existing network bridge. Use 'none' to disable container networking")
 	pidfile := flag.String("p", "/var/run/docker.pid", "File containing process PID")
 	flGraphPath := flag.String("g", "/var/lib/docker", "Path to graph storage base dir.")
 	flEnableCors := flag.Bool("api-enable-cors", false, "Enable CORS requests in the remote api.")
@@ -37,7 +37,7 @@ func main() {
 	flag.Var(&flHosts, "H", "tcp://host:port to bind/connect to or unix://path/to/socket to use")
 	flag.Parse()
 	if len(flHosts) > 1 {
-		flHosts = flHosts[1:len(flHosts)] //trick to display a nice defaul value in the usage
+		flHosts = flHosts[1:] //trick to display a nice defaul value in the usage
 	}
 	for i, flHost := range flHosts {
 		flHosts[i] = utils.ParseHost(docker.DEFAULTHTTPHOST, docker.DEFAULTHTTPPORT, flHost)

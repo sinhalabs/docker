@@ -47,21 +47,22 @@ func parseMultipartForm(r *http.Request) error {
 }
 
 func httpError(w http.ResponseWriter, err error) {
+	statusCode := http.StatusInternalServerError
 	if strings.HasPrefix(err.Error(), "No such") {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		statusCode = http.StatusNotFound
 	} else if strings.HasPrefix(err.Error(), "Bad parameter") {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		statusCode = http.StatusBadRequest
 	} else if strings.HasPrefix(err.Error(), "Conflict") {
-		http.Error(w, err.Error(), http.StatusConflict)
+		statusCode = http.StatusConflict
 	} else if strings.HasPrefix(err.Error(), "Impossible") {
-		http.Error(w, err.Error(), http.StatusNotAcceptable)
+		statusCode = http.StatusNotAcceptable
 	} else if strings.HasPrefix(err.Error(), "Wrong login/password") {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		statusCode = http.StatusUnauthorized
 	} else if strings.Contains(err.Error(), "hasn't been activated") {
-		http.Error(w, err.Error(), http.StatusForbidden)
-	} else {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		statusCode = http.StatusForbidden
 	}
+	utils.Debugf("[error %d] %s", statusCode, err)
+	http.Error(w, err.Error(), statusCode)
 }
 
 func writeJSON(w http.ResponseWriter, b []byte) {
@@ -170,7 +171,7 @@ func getContainersExport(srv *Server, version float64, w http.ResponseWriter, r 
 	name := vars["name"]
 
 	if err := srv.ContainerExport(name, w); err != nil {
-		utils.Debugf("%s", err.Error())
+		utils.Debugf("%s", err)
 		return err
 	}
 	return nil
@@ -250,6 +251,23 @@ func getContainersChanges(srv *Server, version float64, w http.ResponseWriter, r
 	return nil
 }
 
+func getContainersTop(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if vars == nil {
+		return fmt.Errorf("Missing parameter")
+	}
+	name := vars["name"]
+	procsStr, err := srv.ContainerTop(name)
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(procsStr)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, b)
+	return nil
+}
+
 func getContainersJSON(srv *Server, version float64, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	if err := parseForm(r); err != nil {
 		return err
@@ -306,7 +324,7 @@ func postCommit(srv *Server, version float64, w http.ResponseWriter, r *http.Req
 	}
 	config := &Config{}
 	if err := json.NewDecoder(r.Body).Decode(config); err != nil {
-		utils.Debugf("%s", err.Error())
+		utils.Debugf("%s", err)
 	}
 	repo := r.Form.Get("repo")
 	tag := r.Form.Get("tag")
@@ -342,8 +360,7 @@ func postImagesCreate(srv *Server, version float64, w http.ResponseWriter, r *ht
 	}
 	sf := utils.NewStreamFormatter(version > 1.0)
 	if image != "" { //pull
-		registry := r.Form.Get("registry")
-		if err := srv.ImagePull(image, tag, registry, w, sf, &auth.AuthConfig{}); err != nil {
+		if err := srv.ImagePull(image, tag, w, sf, &auth.AuthConfig{}); err != nil {
 			if sf.Used() {
 				w.Write(sf.FormatError(err))
 				return nil
@@ -426,7 +443,6 @@ func postImagesPush(srv *Server, version float64, w http.ResponseWriter, r *http
 	if err := parseForm(r); err != nil {
 		return err
 	}
-	registry := r.Form.Get("registry")
 
 	if vars == nil {
 		return fmt.Errorf("Missing parameter")
@@ -436,7 +452,7 @@ func postImagesPush(srv *Server, version float64, w http.ResponseWriter, r *http
 		w.Header().Set("Content-Type", "application/json")
 	}
 	sf := utils.NewStreamFormatter(version > 1.0)
-	if err := srv.ImagePush(name, registry, w, sf, authConfig); err != nil {
+	if err := srv.ImagePush(name, w, sf, authConfig); err != nil {
 		if sf.Used() {
 			w.Write(sf.FormatError(err))
 			return nil
@@ -535,7 +551,7 @@ func deleteImages(srv *Server, version float64, w http.ResponseWriter, r *http.R
 		return err
 	}
 	if imgs != nil {
-		if len(*imgs) != 0 {
+		if len(imgs) != 0 {
 			b, err := json.Marshal(imgs)
 			if err != nil {
 				return err
@@ -555,8 +571,10 @@ func postContainersStart(srv *Server, version float64, w http.ResponseWriter, r 
 
 	// allow a nil body for backwards compatibility
 	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(hostConfig); err != nil {
-			return err
+		if r.Header.Get("Content-Type") == "application/json" {
+			if err := json.NewDecoder(r.Body).Decode(hostConfig); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -756,6 +774,7 @@ func postBuild(srv *Server, version float64, w http.ResponseWriter, r *http.Requ
 	}
 	remoteURL := r.FormValue("remote")
 	repoName := r.FormValue("t")
+	rawSuppressOutput := r.FormValue("q")
 	tag := ""
 	if strings.Contains(repoName, ":") {
 		remoteParts := strings.Split(repoName, ":")
@@ -802,7 +821,13 @@ func postBuild(srv *Server, version float64, w http.ResponseWriter, r *http.Requ
 		}
 		context = c
 	}
-	b := NewBuildFile(srv, utils.NewWriteFlusher(w))
+
+	suppressOutput, err := getBoolParam(rawSuppressOutput)
+	if err != nil {
+		return err
+	}
+
+	b := NewBuildFile(srv, utils.NewWriteFlusher(w), !suppressOutput)
 	id, err := b.Build(context)
 	if err != nil {
 		fmt.Fprintf(w, "Error build: %s\n", err)
@@ -842,6 +867,7 @@ func createRouter(srv *Server, logging bool) (*mux.Router, error) {
 			"/containers/{name:.*}/export":  getContainersExport,
 			"/containers/{name:.*}/changes": getContainersChanges,
 			"/containers/{name:.*}/json":    getContainersByName,
+			"/containers/{name:.*}/top":     getContainersTop,
 		},
 		"POST": {
 			"/auth":                         postAuth,
@@ -878,7 +904,7 @@ func createRouter(srv *Server, logging bool) (*mux.Router, error) {
 			localMethod := method
 			localFct := fct
 			f := func(w http.ResponseWriter, r *http.Request) {
-				utils.Debugf("Calling %s %s", localMethod, localRoute)
+				utils.Debugf("Calling %s %s from %s", localMethod, localRoute, r.RemoteAddr)
 
 				if logging {
 					log.Println(r.Method, r.RequestURI)

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.0 (2013-07-17)
+ + Runtime: List all processes running inside a container with 'docker top'
+ + Runtime: Host directories can be mounted as volumes with 'docker run -v'
+ + Runtime: Containers can expose public UDP ports (eg, '-p 123/udp')
+ + Runtime: Optionally specify an exact public port (eg. '-p 80:4500')
+ + Registry: New image naming scheme inspired by Go packaging convention allows arbitrary combinations of registries
+ + Builder: ENTRYPOINT instruction sets a default binary entry point to a container
+ + Builder: VOLUME instruction marks a part of the container as persistent data
+ * Builder: 'docker build' displays the full output of a build by default
+ * Runtime: 'docker login' supports additional options
+ - Runtime: Dont save a container's hostname when committing an image.
+ - Registry: Fix issues when uploading images to a private registry
+
+## 0.4.8 (2013-07-01)
+ + Builder: New build operation ENTRYPOINT adds an executable entry point to the container.
+ - Runtime: Fix a bug which caused 'docker run -d' to no longer print the container ID.
+ - Tests: Fix issues in the test suite
+
+## 0.4.7 (2013-06-28)
+ * Registry: easier push/pull to a custom registry
+ * Remote API: the progress bar updates faster when downloading and uploading large files
+ - Remote API: fix a bug in the optional unix socket transport
+ * Runtime: improve detection of kernel version
+ + Runtime: host directories can be mounted as volumes with 'docker run -b'
+ - Runtime: fix an issue when only attaching to stdin
+ * Runtime: use 'tar --numeric-owner' to avoid uid mismatch across multiple hosts
+ * Hack: improve test suite and dev environment
+ * Hack: remove dependency on unit tests on 'os/user'
+ + Documentation: add terminology section
+
 ## 0.4.6 (2013-06-22)
  - Runtime: fix a bug which caused creation of empty images (and volumes) to crash.
 
